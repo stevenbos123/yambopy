@@ -1,4 +1,4 @@
-# Author: Davide Romanin
+# Author: Davide Romanin (revised: FP, RR)
 #
 # This file is part of the yambopy project
 #
@@ -7,7 +7,7 @@ from yambopy import *
 from yambopy.units import *
 from itertools import product
 
-class YamboBSEKernelDB(YamboSaveDB):
+class YamboBSEKernelDB(object):
     """ Read the BSE Kernel database from yambo.
         It reads <t1| K |t2> where K is the kernel and t_i transition indices.
         
@@ -24,26 +24,30 @@ class YamboBSEKernelDB(YamboSaveDB):
         self.kernel   = kernel
 
     @classmethod
-    def from_db_file(cls,lattice,Qpt=1,folder='.'):
-        """ initialize this class from a ndb.BS_PAR_Q# file
-        """
-        filename='ndb.BS_PAR_Q%d'%Qpt
-        path_filename = os.path.join(folder,filename)
+    def from_db_file(cls, lattice, Qpt=1, folder='.'):
+        """Initialize this class from a ndb.BS_PAR_Q# file."""
+        filename = 'ndb.BS_PAR_Q%d' % Qpt
+        path_filename = os.path.join(folder, filename)
         if not os.path.isfile(path_filename):
-            raise FileNotFoundError("File %s not found in YamboExcitonDB"%path_filename)
+            raise FileNotFoundError(f"File {path_filename} not found in YamboExcitonDB")
 
         with Dataset(path_filename) as database:
             if 'BSE_RESONANT' in database.variables:
-                # Read as transposed since dimension in netCDF are inverted
+                # Read as transposed since dimensions in netCDF are inverted
                 reker, imker = database.variables['BSE_RESONANT'][:].T
                 ker = reker + imker*I
-                # Transform the triangular matrix in a square one
-                kernel = np.transpose(np.triu(ker.data))+np.triu(ker.data)
-                kernel[np.diag_indices(len(kernel))]*=0.5
+                
+                # Transform the triangular matrix to a square Hermitian matrix
+                kernel = np.conjugate(np.transpose(np.triu(ker))) + np.triu(ker)
+                kernel[np.diag_indices(len(kernel))] *= 0.5
+                
+                # Check if the kernel is Hermitian
+                if not np.allclose(kernel, np.conjugate(kernel.T)):
+                    raise ValueError("The constructed kernel matrix is not Hermitian")
             else:
                 raise ValueError('Only BSE_RESONANT case supported so far')
 
-        return cls(lattice,kernel)
+        return cls(lattice, kernel)
 
     @property
     def ntransitions(self): return len(self.kernel)
@@ -72,9 +76,10 @@ class YamboBSEKernelDB(YamboSaveDB):
         self.consistency_BSE_BSK(excitons)
 
         # Basis transformation
-        kernel_exc_basis = np.zeros(Nstates,dtype=np.complex_)
-        for il in range(Nstates):
-            kernel_exc_basis[il] = np.dot( np.conj(eivs[il]), np.dot(kernel,eivs[il]) )
+        kernel_exc_basis  = np.einsum('ij,kj,ki->k', kernel, eivs, np.conj(eivs), optimize=True)
+        #kernel_exc_basis = np.zeros(Nstates,dtype=complex)
+        #for il in range(Nstates):
+        #    kernel_exc_basis[il] = np.dot( np.conj(eivs[il]), np.dot(kernel,eivs[il]) )
 
         return kernel_exc_basis
 
@@ -96,18 +101,19 @@ class YamboBSEKernelDB(YamboSaveDB):
             raise ValueError('Band indices not matching available transitions')
              
         # Wcv defined on the full BZ (only a subset will be filled)
-        Wcv = np.zeros((nk,nk),dtype=np.complex)
+        Wcv = np.zeros((nk,nk),dtype=complex)
         # Find indices where selected valence band appears
         t_v = np.where(table[:,1]==bands[0])[0]
-        # Among those, find subset of indices where conduction band also appears
-        t_vc = np.where(table[t_v][:,2]==bands[1])[0]
+        # Find indices where selected conduction band appears
+        t_c = np.where(table[:,2]==bands[1])[0]
+        # Among those, find subset of indices where both appear together
+        t_vc = [t for t in t_v if t in t_c ]
 
         # Iterate only on the subset
         for it1_subset, it2_subset in product(t_vc,repeat=2):
             ik = table[it1_subset][0]
             ip = table[it2_subset][0]
             Wcv[ik-1,ip-1] = kernel[it1_subset,it2_subset]
-
         return Wcv
 
     def get_string(self,mark="="):
