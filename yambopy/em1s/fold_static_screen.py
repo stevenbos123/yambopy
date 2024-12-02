@@ -155,7 +155,7 @@ class fold_vX():
         # 2) find all the pairs G,g such that g = G + g_Q and return an array [i,j,k] = [Index G, Index g, Index g_Q]. 
         # Note that for a single g_Q there might be more than one (G,g) pair
         g_QMap = self.Getg_Q_fixed(g_QIndexMap)
-        g_QMap2 = self.Getg_Q_KDTree(g_QIndexMap)
+        # g_QMap2 = self.Getg_Q_KDTree(g_QIndexMap)
 
         #PRINT INFOS ABOUT G, g AND g=G+g_Q VECTORS 
         #uncomment for debugging
@@ -281,30 +281,33 @@ class fold_vX():
         #  self.Ngvectors = numeber of g-vectors in the supercell
         #
         ExpandedX = np.zeros([self.Nqpts,self.Ngvectors,self.Ngvectors],dtype=np.complex64) # shape: (number of q, number of g, number of g)
-        ExpandedX.fill(0)
     
         # for each Q,q in the clean list associate the q_Q with the corresponding G,g pairs from Getg_QScEm1sDB
-        print(" Shape g_QMap : "+str(g_QMap.shape[0]) + "   " +str(g_QMap.shape[1]))
+        print(f"Shape g_QMap: {g_QMap.shape}")
 
 
-#      for IndexQ in range(self.NQpts):
-#          q_Q = IndexMap[IndexQ,2] # g_Q from first list (calculated as Q-q)
-#          Indexq = IndexMap[IndexQ,1]   # 
-#          G_and_g = g_QMap[g_QMap[:,2] == q_Q]   # select the G,g pairs such that g-G are equal as Q-q
-#
-#          print("Q #" , IndexQ ,self.Qpts[IndexQ], IndexMap[IndexQ])
-#          print("Indices of G, g and g_Q such that g_Q = current Q-q")
-#          print(G_and_g)
-#          for j1,j2 in product(range(len(G_and_g)),repeat=2):
-#              IndexG1, IndexG2 = G_and_g[j1,0], G_and_g[j2,0]
-#              Indexg1, Indexg2 = G_and_g[j1,1], G_and_g[j2,1]
-#              ExpandedX[Indexq,Indexg1,Indexg2] = UcX[IndexQ,IndexG1,IndexG2]
-        for j1 in range(max_ig):
-            for j2 in range(max_ig):
-                print("Indexes "+str(g_vs_G[0,j1]) + "  "+str(g_vs_G[1,j1]) + "   "+str(g_vs_G[1,j2]))
-                if g_vs_G[0,j1] != g_vs_G[0,j2]:
-                    continue
-                ExpandedX[0,j1,j2] = UcX[g_vs_G[0,j1],g_vs_G[1,j1],g_vs_G[1,j2]]
+        for IndexQ in range(self.NQpts):
+            q_Q = IndexMap[IndexQ, 2]  # g_Q from first list (calculated as Q-q)
+            Indexq = IndexMap[IndexQ, 1]
+            
+            # Use boolean indexing for faster selection
+            G_and_g = g_QMap[g_QMap[:, 2] == q_Q]
+
+            print(f"Q #{IndexQ}, {self.Qpts[IndexQ]}, {IndexMap[IndexQ]}")
+            print("Indices of G, g and g_Q such that g_Q = current Q-q")
+            print(G_and_g)
+
+            # Vectorize the assignment operation
+            IndexG1, IndexG2 = G_and_g[:, 0], G_and_g[:, 0][:, np.newaxis]
+            Indexg1, Indexg2 = G_and_g[:, 1], G_and_g[:, 1][:, np.newaxis]
+            ExpandedX[Indexq, Indexg1, Indexg2] = UcX[IndexQ, IndexG1, IndexG2]
+
+        # for j1 in range(max_ig):
+            # for j2 in range(max_ig):
+                # print("Indexes "+str(g_vs_G[0,j1]) + "  "+str(g_vs_G[1,j1]) + "   "+str(g_vs_G[1,j2]))
+                # if g_vs_G[0,j1] != g_vs_G[0,j2]:
+                    # continue
+                # ExpandedX[0,j1,j2] = UcX[g_vs_G[0,j1],g_vs_G[1,j1],g_vs_G[1,j2]]
 
         return ExpandedX   
     #   Q in common with q : 0  2  5  6 7 12 13 62
@@ -383,13 +386,13 @@ class fold_vX():
 
         # Acquire all the g_Qs corresponding to the left over indices
         
-        g_Q = []
-        OldIndex = []
-        for i in g_Q_IndexCleanList : 
-            g_Q.append(self.gvectors[i])    #here indexing has changed
-            OldIndex.append(i)
-        g_Q = np.array(g_Q)
-        OldIndex = np.array(OldIndex)
+        g_Q = self.gvectors[g_Q_IndexCleanList]
+        OldIndex = g_Q_IndexCleanList
+        # for i in g_Q_IndexCleanList : 
+            # g_Q.append(self.gvectors[i])    #here indexing has changed
+            # OldIndex.append(i)
+        # g_Q = np.array(g_Q)
+        # OldIndex = np.array(OldIndex)
             
         print(g_Q.shape)
         print(OldIndex.shape)         
@@ -418,15 +421,17 @@ class fold_vX():
             print()
 
 
-        start3 = time.time()
-        Ggg_QMap = []
-        for IndexG in range(len(Gplusg_Q)):
-            for Indexg_Q in range(len(Gplusg_Q[IndexG])):  #g_Q_IndexCleanList :
-                for Indexg in range(len(self.gvectors)):
-    #                  if (abs(Gplusg_Q[IndexG,Indexg_Q]-self.gvectors[Indexg]) < threshold).all() :  #abs does not include the shorter ones too 
-                    if (abs(Gplusg_Q[IndexG,Indexg_Q]-self.gvectors[Indexg]) < threshold).all() :  #abs does not include the shorter ones too 
-                        Ggg_QMap.append([IndexG,Indexg,g_Q_IndexCleanList[Indexg_Q]])
-        Ggg_QMap = np.array(Ggg_QMap)
+        start3 = time.time()        
+        differences = Gplusg_Q[:, :, np.newaxis, :] - self.gvectors[np.newaxis, np.newaxis, :, :]
+        mask = np.all(np.abs(differences) < threshold, axis=-1)
+        matches = np.where(mask)
+        
+        # Create Ggg_QMap
+        Ggg_QMap = np.column_stack((
+            matches[0],
+            matches[2],
+            np.array(g_Q_IndexCleanList)[matches[1]]
+        ))
         print("time elapsed for the long computation: ", time.time()-start3)
         print("shape of Ggg_Q map: ",  Ggg_QMap.shape)
         return Ggg_QMap
