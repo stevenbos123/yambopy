@@ -23,6 +23,100 @@ import scipy.interpolate as interpolate
 
 
 
+def lanczos_global_parallel(epsilon, psi, m):
+        """
+        Parallel implementation of Lanczos basis construction using MPI.
+
+        Parameters
+        ----------
+        epsilon : np.ndarray
+            Dielectric operator, shape (N_q, N_gvecs, N_gvecs).
+        psi : np.ndarray
+            Wavefunctions, shape (N_q, N_bands, N_gvecs).
+        m : int
+            Number of Lanczos steps (subspace dimension).
+
+        Returns
+        -------
+        Q : np.ndarray
+            Lanczos basis, shape (N_q, N_bands, N_gvecs, m).
+        alpha : np.ndarray
+            Diagonal elements of the tridiagonal matrix, shape (m,).
+        beta : np.ndarray
+            Off-diagonal elements of the tridiagonal matrix, shape (m-1,).
+        """
+        from mpi4py import MPI
+        comm = MPI.COMM_WORLD
+        rank = comm.Get_rank()
+        size = comm.Get_size()
+
+        N_q, N_gvecs, _ = epsilon.shape
+        N_bands = psi.shape[1]
+
+        # Divide q-points among processes
+        q_start = rank * (N_q // size)
+        q_end = (rank + 1) * (N_q // size) if rank != size - 1 else N_q
+        epsilon_local = epsilon[q_start:q_end]
+        psi_local = psi[q_start:q_end]
+
+        # Initialize local Lanczos basis arrays
+        local_Q = np.zeros((q_end - q_start, N_bands, N_gvecs, m), dtype=complex)
+        alpha = np.zeros(m, dtype=float)
+        beta = np.zeros(m-1, dtype=float)
+
+        # Normalize initial wavefunction
+        psi_global = psi_local.reshape(-1)
+        psi_norm = np.linalg.norm(psi_global)
+        Q_global = np.zeros((N_q * N_bands * N_gvecs, m), dtype=complex)
+        if rank == 0:
+            Q_global[:, 0] = psi_global / psi_norm
+
+        # Broadcast the initial Lanczos vector to all processes
+        comm.Bcast(Q_global[:, 0], root=0)
+
+        # Perform Lanczos iterations
+        for n in range(m):
+            w_local = np.zeros((q_end - q_start, N_bands, N_gvecs), dtype=complex)
+
+            for q in range(q_end - q_start):
+                w_q = np.einsum('ij,bj->bi', epsilon_local[q], Q_global[q_start + q].reshape(N_bands, N_gvecs))
+                w_local[q] = w_q
+
+            # Gather `w` from all processes
+            w_global = np.zeros_like(Q_global[:, n])
+            comm.Allgather([w_local.flatten(), MPI.COMPLEX], [w_global, MPI.COMPLEX])
+
+            # Compute alpha and update w
+            if rank == 0:
+                alpha[n] = np.real(np.vdot(Q_global[:, n], w_global))
+            alpha = comm.bcast(alpha, root=0)
+
+            w_global -= alpha[n] * Q_global[:, n]
+
+            if n > 0:
+                w_global -= beta[n-1] * Q_global[:, n-1]
+
+            # Reorthogonalize
+            if rank == 0:
+                coeffs = np.dot(Q_global[:, :n+1].conj().T, w_global)
+                w_global -= np.dot(Q_global[:, :n+1], coeffs)
+
+            # Broadcast orthogonalized `w`
+            comm.Bcast(w_global, root=0)
+
+            # Normalize and compute beta
+            beta_norm = np.linalg.norm(w_global)
+            beta = comm.bcast(beta, root=0)
+            if beta_norm > 1e-14 and n < m - 1:
+                if rank == 0:
+                    Q_global[:, n+1] = w_global / beta_norm
+                    beta[n] = beta_norm
+
+        # Gather final Q from all processes
+        comm.Allgather([local_Q.flatten(), MPI.COMPLEX], [Q_global, MPI.COMPLEX])
+
+        return Q_global.reshape(N_q, N_bands, N_gvecs, m), alpha, beta
+
 
 
 def fourier_interpolate(original_data, original_freq, target_grid, method):
@@ -678,97 +772,3 @@ class dielectricModel():
         fig.savefig(fname=save_path)
         return fig, ax
 
-
-    def lanczos_global_parallel(epsilon, psi, m):
-        """
-        Parallel implementation of Lanczos basis construction using MPI.
-
-        Parameters
-        ----------
-        epsilon : np.ndarray
-            Dielectric operator, shape (N_q, N_gvecs, N_gvecs).
-        psi : np.ndarray
-            Wavefunctions, shape (N_q, N_bands, N_gvecs).
-        m : int
-            Number of Lanczos steps (subspace dimension).
-
-        Returns
-        -------
-        Q : np.ndarray
-            Lanczos basis, shape (N_q, N_bands, N_gvecs, m).
-        alpha : np.ndarray
-            Diagonal elements of the tridiagonal matrix, shape (m,).
-        beta : np.ndarray
-            Off-diagonal elements of the tridiagonal matrix, shape (m-1,).
-        """
-        from mpi4py import MPI
-        comm = MPI.COMM_WORLD
-        rank = comm.Get_rank()
-        size = comm.Get_size()
-
-        N_q, N_gvecs, _ = epsilon.shape
-        N_bands = psi.shape[1]
-
-        # Divide q-points among processes
-        q_start = rank * (N_q // size)
-        q_end = (rank + 1) * (N_q // size) if rank != size - 1 else N_q
-        epsilon_local = epsilon[q_start:q_end]
-        psi_local = psi[q_start:q_end]
-
-        # Initialize local Lanczos basis arrays
-        local_Q = np.zeros((q_end - q_start, N_bands, N_gvecs, m), dtype=complex)
-        alpha = np.zeros(m, dtype=float)
-        beta = np.zeros(m-1, dtype=float)
-
-        # Normalize initial wavefunction
-        psi_global = psi_local.reshape(-1)
-        psi_norm = np.linalg.norm(psi_global)
-        Q_global = np.zeros((N_q * N_bands * N_gvecs, m), dtype=complex)
-        if rank == 0:
-            Q_global[:, 0] = psi_global / psi_norm
-
-        # Broadcast the initial Lanczos vector to all processes
-        comm.Bcast(Q_global[:, 0], root=0)
-
-        # Perform Lanczos iterations
-        for n in range(m):
-            w_local = np.zeros((q_end - q_start, N_bands, N_gvecs), dtype=complex)
-
-            for q in range(q_end - q_start):
-                w_q = np.einsum('ij,bj->bi', epsilon_local[q], Q_global[q_start + q].reshape(N_bands, N_gvecs))
-                w_local[q] = w_q
-
-            # Gather `w` from all processes
-            w_global = np.zeros_like(Q_global[:, n])
-            comm.Allgather([w_local.flatten(), MPI.COMPLEX], [w_global, MPI.COMPLEX])
-
-            # Compute alpha and update w
-            if rank == 0:
-                alpha[n] = np.real(np.vdot(Q_global[:, n], w_global))
-            alpha = comm.bcast(alpha, root=0)
-
-            w_global -= alpha[n] * Q_global[:, n]
-
-            if n > 0:
-                w_global -= beta[n-1] * Q_global[:, n-1]
-
-            # Reorthogonalize
-            if rank == 0:
-                coeffs = np.dot(Q_global[:, :n+1].conj().T, w_global)
-                w_global -= np.dot(Q_global[:, :n+1], coeffs)
-
-            # Broadcast orthogonalized `w`
-            comm.Bcast(w_global, root=0)
-
-            # Normalize and compute beta
-            beta_norm = np.linalg.norm(w_global)
-            beta = comm.bcast(beta, root=0)
-            if beta_norm > 1e-14 and n < m - 1:
-                if rank == 0:
-                    Q_global[:, n+1] = w_global / beta_norm
-                    beta[n] = beta_norm
-
-        # Gather final Q from all processes
-        comm.Allgather([local_Q.flatten(), MPI.COMPLEX], [Q_global, MPI.COMPLEX])
-
-        return Q_global.reshape(N_q, N_bands, N_gvecs, m), alpha, beta
