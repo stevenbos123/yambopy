@@ -205,7 +205,7 @@ class YamboStaticScreeningDB(object):
                         sqrt_V[iq,ig] = np.sqrt(4.0*np.pi)/QPG        
             self.sqrt_V = sqrt_V
 
-    def _getepsq(self,volume=False,use_trueX=False,indices=None): 
+    def _getepsq(self,ng1=0, ng2=0, volume=False,use_trueX=False,indices=None): 
         """
         Get epsilon_{0,0} = [1/(1+vX)]_{0,0} as a function of |q|
         vX is a matrix with size equal to the number of local fields components
@@ -232,7 +232,7 @@ class YamboStaticScreeningDB(object):
             X = self.X
         
         # Vectorized inverse calculation
-        y = np.linalg.inv(np.eye(self.ngvectors)[None, :, :] + X[:, :, :])[:, 0, 0]
+        y = np.linalg.inv(np.eye(self.ngvectors)[None, :, :] + X[:, :, :])[:, :, :]
         y = y[indices]
         
         # Sort using numpy
@@ -365,8 +365,8 @@ class YamboStaticScreeningDB(object):
         """
         Get epsilon_{0,0} = [1/(1+vX)]_{0,0} as a function of |q|
         """
-        x,y = self._getepsq(volume=volume, use_trueX=use_trueX)
-        ax.plot(x,y.real,**kwargs)
+        x,y = self._getepsq(ng1=ng1,ng2=ng2, volume=volume, use_trueX=use_trueX)
+        ax.plot(x,y[:,ng1,ng2].real,**kwargs)
         ax.set_xlabel('$|q|$')
         ax.set_ylabel('$\epsilon_{%d%d}(\omega=0)$'%(ng1,ng2))
 

@@ -15,6 +15,7 @@ from netCDF4 import Dataset
 from yambopy.lattice import car_red
 from yambopy.tools.string import marquee
 from yambopy.dbs.latticedb import YamboLatticeDB
+from yambopy.dbs.em1sdb import YamboStaticScreeningDB
 
 def find_inversion_type(n_atoms,atom_pos,syms):
     """
@@ -47,7 +48,7 @@ def find_inversion_type(n_atoms,atom_pos,syms):
     
     return inv_type, inv_index
 
-class YamboEm1sRotate():
+class YamboEm1sRotate(YamboStaticScreeningDB):
     """
     This class expands the em1s computed by yambo in the IBZ to the
     full BZ (i.e., Wigner-Seitz cell). 
@@ -72,13 +73,18 @@ class YamboEm1sRotate():
     """
 
     def __init__(self,yem1s,save_path="SAVE",db1='ns.db1',path_output_DBs=None,verbose=0):
-
-        # Attributes imported from StaticScreeningDB    
+        super().__init__(
+            save=yem1s.save, 
+            em1s=yem1s.em1s, 
+            filename='ndb.em1s', 
+            do_not_read_cutoff=False)
+    
         supported_cutoffs = ['none','slab z']
         self.cutoff       = yem1s.cutoff
 
-        if yem1s.cutoff not in supported_cutoffs: raise NotImplementedError("[ERROR] The em1s rotation is not currently implemented for cutoff %s."%yem1s.cutoff)
-
+        if yem1s.cutoff not in supported_cutoffs: 
+            raise NotImplementedError(f"[ERROR] The em1s rotation is not currently implemented for cutoff {yem1s.cutoff}.")
+        
         self.rlat         = yem1s.rlat
         self.alat         = yem1s.alat
         self.qpoints_ibz  = yem1s.car_qpoints
@@ -88,26 +94,27 @@ class YamboEm1sRotate():
         self.ngvectors    = yem1s.ngvectors
         self.X_ibz        = yem1s.X
         self.em1s_path    = yem1s.em1s
+        self.save_path    = yem1s.save
 
         self.k_output     = 'kpoints_bz.dat'
 
-        expanded_lattice = YamboLatticeDB.from_db_file(filename = '%s/%s'%(save_path,db1), Expand=True)
+        self.expanded_lattice = YamboLatticeDB.from_db_file(filename = '%s/%s'%(self.save_path,db1), Expand=True)
 
 
         # Get symmetries in CC and real-space atomic positions
-        _, n_atoms = np.unique(expanded_lattice.atomic_numbers, return_counts=True)
-        atom_pos = expanded_lattice.car_atomic_positions
-        self.sym_car = expanded_lattice.sym_car
+        _, n_atoms = np.unique(self.expanded_lattice.atomic_numbers, return_counts=True)
+        atom_pos = self.expanded_lattice.car_atomic_positions
+        self.sym_car = self.expanded_lattice.sym_car
         self.nsyms = len(self.sym_car)
-        if verbose: iku_kpoints_ibz = expanded_lattice.ibz_kpoints
+        if verbose: iku_kpoints_ibz = self.expanded_lattice.ibz_kpoints
 
         print("=== Rotating em1s... ===")
         print(" * Getting q-map...  ")
 
         # Obtain transformed qpoints q'=Sq in the full BZ
-        self.qpoints = expanded_lattice.car_kpoints
-        self.qpoints_indices = expanded_lattice.kpoints_indexes
-        self.syms_indices  = expanded_lattice.symmetry_indexes
+        self.qpoints = self.expanded_lattice.car_kpoints
+        self.qpoints_indices = self.expanded_lattice.kpoints_indexes
+        self.syms_indices  = self.expanded_lattice.symmetry_indexes
         self.nqpoints = len(self.qpoints)
 
         print(" * Getting G-map ...  ")
