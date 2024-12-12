@@ -17,6 +17,100 @@ from sklearn.model_selection import KFold
 from typing import Tuple, Literal
 import numpy.typing as npt
 
+
+
+import scipy.interpolate as interpolate
+
+
+
+
+
+def fourier_interpolate(original_data, original_freq, target_grid, method):
+    """
+    Interpolate data using Fourier transform method
+
+    Parameters:
+    -----------
+    original_data : array_like
+    The original data to be interpolated
+    original_freq : array_like
+    The frequency grid of the original data
+    target_grid : array_like
+    The target grid for interpolation
+
+    Returns:
+    --------
+    interpolated_data : ndarray
+    Interpolated data on the target grid
+    """
+    # Perform FFT on the original data
+    fft_data = np.fft.fft(original_data)
+
+    # Create interpolation function for FFT magnitude and phase
+    magnitude_interp = interpolate.interp1d(
+    original_freq, 
+    np.abs(fft_data), 
+    kind=method, 
+    fill_value='extrapolate'
+    )
+    phase_interp = interpolate.interp1d(
+    original_freq, 
+    np.angle(fft_data), 
+    kind=method, 
+    fill_value='extrapolate'
+    )
+
+    # Interpolate magnitude and phase on the target frequency grid
+    target_magnitude = magnitude_interp(np.fft.fftfreq(len(target_grid), d=(target_grid[1]-target_grid[0])))
+    target_phase = phase_interp(np.fft.fftfreq(len(target_grid), d=(target_grid[1]-target_grid[0])))
+
+    # Reconstruct complex FFT data
+    target_fft = target_magnitude * np.exp(1j * target_phase)
+
+    # Perform inverse FFT to get interpolated data
+    interpolated_data = np.real(np.fft.ifft(target_fft))
+
+    return interpolated_data
+
+def direct_interpolate(original_data, original_grid, target_grid, method):
+    """
+    Directly interpolate data in the original spatial domain
+
+    Parameters:
+    -----------
+    original_data : array_like
+    The original data to be interpolated
+    original_grid : array_like
+    The original grid points
+    target_grid : array_like
+    The target grid for interpolation
+    method : str, optional
+    Interpolation method. Defaults to 'linear'.
+    Options include 'linear', 'nearest', 'zero', 'slinear', 'quadratic', 'cubic'
+
+    Returns:
+    --------
+    interpolated_data : ndarray
+    Interpolated data on the target grid
+    """
+    # Create interpolation function
+    interpolator = interpolate.interp1d(
+    original_grid, 
+    original_data, 
+    kind=method, 
+    fill_value='extrapolate'
+    )
+
+    # Interpolate data
+    interpolated_data = interpolator(target_grid)
+
+    return interpolated_data
+    
+
+
+
+
+
 class UCtoSCInterpolator():
     """
     Interpolator for obtaining SC screening matrix from UC screening matrix.
@@ -79,7 +173,7 @@ class UCtoSCInterpolator():
         if ExpandUc == True :   #if Uc calculation is with symmetries use the Q point list after rotation
             self.Qpts = UcFull1BZStaticScreening.qpoints   # in cartesian coordinates
         elif ExpandUc == False:  #if Uc calculation is without symmetries use the Q point list read from lattice database
-            self.qpts = UcFull1BZStaticScreening.car_qpoints
+            self.Qpts = UcFull1BZStaticScreening.car_qpoints
         self.NQpts = UcFull1BZStaticScreening.nqpoints
         self.UcX = UcFull1BZStaticScreening.X
         # At this point I have X_{G,G'}(Q) for the Uc with a database fragment for each Q
@@ -273,3 +367,317 @@ class UCtoSCInterpolator():
         # uncertainties = uncertainties_flat.reshape(nq_sc, ng_sc, ng_sc)
         
         return sc_X#, uncertainties
+
+    def SaveNewXDB(self, InputX, Db2BeOverWritten ,OutputPath) :
+            """
+            Save the database, constructed from saveDBS in em1sdb
+            """
+            if os.path.isdir(OutputPath): shutil.rmtree(OutputPath)
+            os.mkdir(OutputPath)
+
+            # recast X in array of X[q] of the different q
+    #       self.new_x = np.array([ self.X[q] for q in range(self.sqq) if self.in_sIBZ[q]==1 ])     
+    #        NewX = np.array([ InputX[q] for q in range(self.Nqpts) if self.in_sIBZ[q]==1 ])
+
+            # copy ndb.em1s
+            shutil.copyfile("%s/%s"%(Db2BeOverWritten,self.ScEm1sDB),"%s/%s"%(OutputPath,self.ScEm1sDB))
+            # copy em1s fragments, one per q point
+            for Indexq in range(self.Nqpts):
+                FragmentName = "%s_fragment_%d"%(self.ScEm1sDB,Indexq+1)
+                shutil.copyfile("%s/%s"%(Db2BeOverWritten,FragmentName),"%s/%s"%(OutputPath,FragmentName))
+
+            #overwrite new X in the copied databases
+            for Indexq in range(self.Nqpts):
+                FragmentName = "%s_fragment_%d"%(self.ScEm1sDB,Indexq+1)
+                database = Dataset("%s/%s"%(OutputPath,FragmentName),'r+')
+                database.variables['X_Q_%d'%(Indexq+1)][0,:,:,0] = InputX[Indexq].real
+                database.variables['X_Q_%d'%(Indexq+1)][0,:,:,1] = InputX[Indexq].imag
+                database.close()
+
+
+
+
+    def gmod(self,g):
+        """
+        Calculate the modulus of the g-vector(s)
+        """
+        g = np.atleast_2d(g)  # Ensure g is at least 2D
+        gbar = g * 2 * np.pi
+        g_mod = np.einsum('ij,ij->i', gbar, np.abs(gbar))
+        
+        return np.sign(g_mod) * np.sqrt(np.abs(g_mod))
+    
+    def prepare_Q_grid(self):
+        Qdist = np.abs(self.gmod(self.Qpts))
+        Qsorted_argsort = np.argsort(Qdist)
+        self.Qsorted = np.sort(Qdist)
+        self.xQsorted = self.UcX[Qsorted_argsort,:,:]
+        print(f"Shape of X UC after sorting: {self.xQsorted.shape}")
+
+
+    def prepare_q_grid(self):
+        qdist = np.abs(self.gmod(self.qpts))
+        self.qsorted_argsort = np.argsort(qdist)
+        self.qsorted = np.sort(qdist)
+        
+
+    def interpolate_q(self, method):
+        self.prepare_Q_grid()
+        self.prepare_q_grid()
+
+        num_g = len(self.Gvectors)
+        interpolated_data = np.zeros((len(self.qsorted), num_g, num_g), dtype=complex)
+        
+        for gi in range(num_g):
+            for gj in range(gi, num_g):  # Only compute for gj >= gi to leverage symmetry
+                if gi//10==1 or gj//10==1:
+                    print(gi, gj)
+                real_data, imag_data = np.real(self.xQsorted[:, gi, gj]), np.imag(self.xQsorted[:, gi, gj])
+                fft_real_freq = np.fft.fftfreq(len(real_data), d=(self.Qsorted[1] - self.Qsorted[0]))
+
+                interpolated_imag_fourier = fourier_interpolate(imag_data, fft_real_freq, self.qsorted, method=method)
+                interpolated_real_fourier = fourier_interpolate(real_data, fft_real_freq, self.qsorted, method=method)
+
+                interpolated_complex_fourier = interpolated_real_fourier + 1j * interpolated_imag_fourier
+                
+                # Store the result using symmetry
+                interpolated_data[:, gi, gj] = interpolated_complex_fourier
+                if gi != gj:
+                    interpolated_data[:, gj, gi] = interpolated_complex_fourier
+        
+        inverse_qsort_indices = np.argsort(self.qsorted_argsort)
+        self.ScX = interpolated_data[inverse_qsort_indices]
+
+
+
+
+from yambopy.dbs.wfdb import *
+
+class dielectricModel():
+    def __init__(self, UcLatticePath, UcScreeningPath, 
+                 UcLattDB ="ns.db1",UcEm1sDB = "ndb.em1s", 
+                 ExpandUc=True) -> None:
+        
+        x_uc= YamboStaticScreeningDB(save=UcLatticePath, em1s=UcScreeningPath)
+        x_uc_rotated = YamboEm1sRotate(x_uc)
+        wf_uc= YamboWFDB(save=UcLatticePath)
+        self.psi, self.vq, self.e = self.lanczos_basis(x_uc, wf_uc)
+        self.epsilon = x_uc.X
+
+        self.car_qpoints = x_uc.car_qpoints
+
+
+    def lanczos_basis(self,x_uc, wf_uc):
+        NGvecs = x_uc.ngvectors
+        e = wf_uc.wf[:,:,:,:NGvecs]
+        vq = x_uc.sqrt_V
+        # Step 1: Compute conjugate and product
+        e_conj = np.conj(e)
+        product = e_conj * e  # Element-wise multiplication
+
+        # Step 2: Apply dielectric function
+        v_sqrt = vq  # Element-wise square root
+        psi_intermediate = v_sqrt[:, np.newaxis, np.newaxis, :] * product
+        psi = psi_intermediate.reshape(x_uc.nqpoints, x_uc.nbands, x_uc.ngvectors)
+
+        return psi, vq, e
+        # Step 3: Apply transformation matrix C
+        # Assuming C is defined and has compatible dimensions for multiplication
+        psi_final = psi_intermediate
+
+
+        # Compute (eps - I)|psi> for each q-point
+        result = eps - np.eye(x_uc.ngvectors)[np.newaxis, :, :]
+        final_result = np.einsum('qij,qbaj->qbai', result, psi_final).reshape(x_uc.nqpoints, x_uc.nbands, x_uc.ngvectors)
+
+
+    def lanczos_global(self, m):
+        """
+        Construct a global orthonormal Lanczos basis across q-points and bands.
+
+        Parameters
+        ----------
+        epsilon : np.ndarray
+            Dielectric operator, shape (N_q, N_gvecs, N_gvecs).
+        psi : np.ndarray
+            Wavefunctions, shape (N_q, N_bands, N_gvecs).
+        m : int
+            Number of Lanczos steps (subspace dimension).
+
+        Returns
+        -------
+        Q : np.ndarray
+            Orthonormal global Lanczos basis, shape (N_q, N_bands, N_gvecs, m).
+        alpha : np.ndarray
+            Diagonal elements of the tridiagonal matrix, shape (m,).
+        beta : np.ndarray
+            Off-diagonal elements of the tridiagonal matrix, shape (m-1,).
+        """
+        epsilon, psi = self.epsilon, self.psi
+        N_q, N_gvecs, _ = epsilon.shape
+        _, N_bands, _ = psi.shape
+
+        # Flatten psi for global processing
+        psi_global = psi.reshape(N_q * N_bands * N_gvecs)
+
+        # Initialize arrays for Lanczos iteration
+        total_dim = N_q * N_bands * N_gvecs
+        Q = np.zeros((total_dim, m), dtype=complex)
+        alpha = np.zeros(m, dtype=float)
+        beta = np.zeros(m-1, dtype=float)
+
+        # Normalize initial wavefunction
+        psi_norm = np.linalg.norm(psi_global)
+        Q[:, 0] = psi_global / psi_norm
+
+        for n in range(m):
+            # Apply block-diagonal epsilon to the current vector
+            w = np.zeros_like(Q[:, n], dtype=complex)
+
+            for q in range(N_q):
+                start = q * N_bands * N_gvecs
+                end = start + N_bands * N_gvecs
+
+                # Reshape the current Lanczos vector for this q-point
+                Q_q = Q[start:end, n].reshape(N_bands, N_gvecs)
+
+                # Apply epsilon[q] to each band
+                w_q = np.einsum('ij,bj->bi', epsilon[q], Q_q)  # Shape (N_bands, N_gvecs)
+                w[start:end] = w_q.flatten()
+
+            # Compute alpha (diagonal element)
+            alpha[n] = np.vdot(Q[:, n], w).real
+            w -= alpha[n] * Q[:, n]
+
+            # Remove component along the previous Lanczos vector
+            if n > 0:
+                w -= beta[n-1] * Q[:, n-1]
+
+            # Reorthogonalize with all previous vectors
+            for j in range(n + 1):
+                coeff = np.vdot(Q[:, j], w)
+                w -= coeff * Q[:, j]
+
+            # Normalize w and compute beta
+            beta_norm = np.linalg.norm(w)
+            if beta_norm > 1e-14:
+                if n < m - 1:
+                    Q[:, n+1] = w / beta_norm
+                    beta[n] = beta_norm
+            else:
+                break
+        self.Q = Q.reshape(N_q, N_bands, N_gvecs, m)
+        self.alpha = alpha
+        self.beta = beta
+
+        # return self.Q, self.alpha, self.beta
+
+
+    def _tridiagonal_matrix(self, alpha, beta):
+        """
+        Construct the tridiagonal matrix from Lanczos coefficients.
+
+        Parameters
+        ----------
+        alpha : np.ndarray
+            Diagonal elements, shape (m,).
+        beta : np.ndarray
+            Off-diagonal elements, shape (m-1,).
+
+        Returns
+        -------
+        T : np.ndarray
+            Tridiagonal matrix, shape (m, m).
+        """
+        m = len(alpha)
+        T = np.zeros((m, m), dtype=alpha.dtype)
+
+        # Fill diagonal
+        np.fill_diagonal(T, alpha)
+
+        # Fill off-diagonal
+        np.fill_diagonal(T[:-1, 1:], beta)
+        np.fill_diagonal(T[1:, :-1], beta)
+
+        return T
+
+
+    def build_tridiagonal_matrix(self):
+        # Example usage (assuming alpha and beta are computed from Lanczos):
+        # T_q_band is the tridiagonal representation of epsilon - I for each q-point and band.
+
+        N_q, N_bands, _, m = self.Q.shape
+        T_q_band = np.zeros((N_q, N_bands, m, m), dtype=self.alpha.dtype)
+
+        for q in range(N_q):
+            for b in range(N_bands):
+                T_q_band[q, b] = self._tridiagonal_matrix(self.alpha, self.beta)
+
+        self.T = T_q_band
+
+    def reconstruct_epsilon(self):
+        """
+        Reconstruct the original dielectric matrix from the Lanczos basis and tridiagonal representation.
+
+        Parameters
+        ----------
+        Q : np.ndarray
+            Lanczos basis, shape (N_q, N_bands, N_gvecs, m).
+        T : np.ndarray
+            Tridiagonal representation of epsilon - I in the Lanczos basis, shape (N_q, N_bands, m, m).
+
+        Returns
+        -------
+        epsilon_reconstructed : np.ndarray
+            Reconstructed dielectric matrix, shape (N_q, N_gvecs, N_gvecs).
+        """
+
+        N_q, N_bands, N_gvecs, _ = self.Q.shape
+        epsilon_reconstructed = np.zeros((N_q, N_gvecs, N_gvecs), dtype=complex)
+
+        for q in range(N_q):
+            for b in range(N_bands):
+                # Extract Q and T for this q-point and band
+                Q_qb = self.Q[q, b]  # Shape: (N_gvecs, m)
+                T_qb = self.T[q, b]  # Shape: (m, m)
+
+                # Project T back to the full G-space: epsilon_reconstructed = Q T Q^dagger + I
+                epsilon_reconstructed[q] += Q_qb @ T_qb @ Q_qb.conjugate().T
+
+        # Add the identity matrix back to reconstruct epsilon
+        epsilon_reconstructed += np.eye(N_gvecs, dtype=complex)
+        self.eps_prime = epsilon_reconstructed
+        # return epsilon_reconstructed
+    from yambopy.plot.plotting import add_fig_kwargs
+
+    @add_fig_kwargs
+    def compare_eps_prime(self,save_path='./epsilon_comparison.png', **kwargs):
+        fig, ax = plt.subplots(1,1, **kwargs)
+
+
+        indices = np.arange(len(self.car_qpoints))
+
+        # Vectorized computation of x
+        modelX = self.vq[:, :, np.newaxis] * self.eps_prime/ self.vq[:, np.newaxis, :] /np.pi
+        trueX = self.vq[:, :, np.newaxis] * self.epsilon / self.vq[:, np.newaxis, :] /np.pi
+
+        x = np.linalg.norm(self.car_qpoints[indices], axis=1)
+
+        # Vectorized extraction of y
+        y_true = trueX[:, 0, 0][indices]
+        y_model = modelX[:, 0, 0][indices]
+        # Sort using numpy
+        sort_indices = np.argsort(x)
+        x = x[sort_indices]
+        y_true = y_true[sort_indices]
+        y_model = y_model[sort_indices]
+  
+        ax.plot(x,(1+y_model).real, label='eps_prime')
+        ax.plot(x,(1+y_true).real, label='eps')
+
+        ax.set_xlabel('$|q|$')
+        ax.set_ylabel('$\epsilon^{-1}_{%d%d}(\omega=0)$'%(0,0))
+        ax.legend()
+        fig.savefig(fname=save_path)
+        return fig, ax
+

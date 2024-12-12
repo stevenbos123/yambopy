@@ -82,7 +82,7 @@ class fold_vX():
         if ExpandUc == True :   #if Uc calculation is with symmetries use the Q point list after rotation
             self.Qpts = UcFull1BZStaticScreening.qpoints   # in cartesian coordinates
         elif ExpandUc == False:  #if Uc calculation is without symmetries use the Q point list read from lattice database
-            self.qpts = UcFull1BZStaticScreening.car_qpoints
+            self.Qpts = UcFull1BZStaticScreening.car_qpoints
         self.NQpts = UcFull1BZStaticScreening.nqpoints
         self.UcX = UcFull1BZStaticScreening.X
         # At this point I have X_{G,G'}(Q) for the Uc with a database fragment for each Q
