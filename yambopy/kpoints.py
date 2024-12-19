@@ -30,7 +30,7 @@ def expand_kpoints(car_kpoints,sym_car,rlat,atol=1.e-6):
     * kpoints_full: kpoints in the full brillouin zone
     """
 
-    #check if the kpoints were already exapnded
+    #check if the kpoints were already expanded
     kpoints_indexes  = []
     kpoints_full     = []
     symmetry_indexes = []

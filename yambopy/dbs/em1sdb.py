@@ -194,15 +194,23 @@ class YamboStaticScreeningDB(object):
 
         else:
 
-            sqrt_V = np.zeros([self.nqpoints,self.ngvectors])
             nrm = np.linalg.norm
-            for iq in range(self.nqpoints):
-                for ig in range(self.ngvectors):
-                        Q = 2.*np.pi*self.car_qpoints[iq]
-                        G = 2.*np.pi*self.gvectors[ig]
-                        QPG = nrm(Q+G)
-                        if QPG==0.: QPG=1.e-5
-                        sqrt_V[iq,ig] = np.sqrt(4.0*np.pi)/QPG        
+
+            # Convert q-points and G-vectors to reciprocal space
+            Q = 2.0 * np.pi * self.car_qpoints  # Shape: (nqpoints, 3)
+            G = 2.0 * np.pi * self.gvectors     # Shape: (ngvectors, 3)
+
+            # Compute Q + G for all combinations
+            Q_plus_G = Q[:, None, :] + G[None, :, :]  # Shape: (nqpoints, ngvectors, 3)
+
+            # Compute norms with regularization
+            QPG = np.linalg.norm(Q_plus_G, axis=2)  # Shape: (nqpoints, ngvectors)
+            QPG = np.where(QPG == 0.0, 1.e-5, QPG)  # Regularize small norms
+
+            # Compute square root of the Coulomb potential
+            sqrt_V = np.sqrt(4.0 * np.pi) / QPG  # Shape: (nqpoints, ngvectors)
+
+            # Store the result
             self.sqrt_V = sqrt_V
 
     def _getepsq(self,ng1=0, ng2=0, volume=False,use_trueX=False,indices=None): 

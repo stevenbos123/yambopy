@@ -626,7 +626,8 @@ class dielectricModel():
 
         for n in range(m):
             # Apply block-diagonal epsilon to the current vector
-            print("iteration: ",m)
+            # print("iteration: ",m)
+
             w = np.zeros_like(Q[:, n], dtype=complex)
 
             # Process all q-points in parallel
@@ -648,6 +649,7 @@ class dielectricModel():
 
             # Normalize w and compute beta
             beta_norm = np.linalg.norm(w)
+            print(f"Iteration {n}: norm(w) = {beta_norm}")
             if beta_norm > 1e-14:
                 if n < m - 1:
                     Q[:, n+1] = w / beta_norm
@@ -662,6 +664,103 @@ class dielectricModel():
 
         # return self.Q, self.alpha, self.beta
 
+    def lanczos_with_fft(self, m, block_size=10):
+        """
+        Lanczos basis construction with FFT transformations.
+
+        Parameters
+        ----------
+        m : int
+            Number of Lanczos steps (subspace dimension).
+        block_size : int
+            Size of blocks for processing Lanczos vectors.
+
+        Returns
+        -------
+        Q : np.ndarray
+            Lanczos basis, shape (N_q, N_bands, N_gvecs, m).
+        alpha : np.ndarray
+            Diagonal elements of the tridiagonal matrix, shape (m,).
+        beta : np.ndarray
+            Off-diagonal elements of the tridiagonal matrix, shape (m-1,).
+        """
+
+        epsilon, psi, v_c = self.epsilon, self.psi, self.vq
+        N_q, N_gvecs, _ = epsilon.shape
+        _, N_bands, _ = psi.shape
+
+        # Flatten psi for global processing
+        psi_global = psi.reshape(-1)  # Flatten to 1D array
+
+        # Initialize arrays for Lanczos iteration
+        total_dim = N_q * N_bands * N_gvecs
+        Q = np.zeros((total_dim, m), dtype=complex)
+        alpha = np.zeros(m, dtype=float)
+        beta = np.zeros(m-1, dtype=float)
+
+        # Normalize initial wavefunction
+        psi_norm = np.linalg.norm(psi_global)
+        Q[:, 0] = psi_global / psi_norm
+
+        for block_start in range(0, m, block_size):
+            print(f"Block: {block_start}")
+            for n in range(block_start, min(block_start + block_size, m)):
+                w = np.zeros(total_dim, dtype=complex)  # 1D global vector for `w`
+
+                # Reshape Q to include q-point structure for batch processing
+                Q_reshaped = Q[:, n].reshape(N_q, N_bands, N_gvecs)  # Shape: (N_q, N_bands, N_gvecs)
+
+                # Apply epsilon[q] in reciprocal space for all q-points simultaneously
+                w_q = np.einsum('qij,qbj->qbi', epsilon, Q_reshaped)  # Shape: (N_q, N_bands, N_gvecs)
+
+                # Transform to real space (batch FFT along the G-vector dimension)
+                w_r = np.fft.ifft(w_q, axis=2)  # Shape: (N_q, N_bands, N_gvecs)
+
+                # Conjugate in real space
+                w_r.imag *= -1
+
+                # Transform back to reciprocal space (batch FFT along the G-vector dimension)
+                w_q = np.fft.fft(w_r, axis=2)  # Shape: (N_q, N_bands, N_gvecs)
+
+                # Apply regularized Coulomb potential
+                w_q /= self.vq[:, np.newaxis, :]  # Broadcasting to shape (N_q, N_bands, N_gvecs)
+
+                # Flatten w_q and update the global vector
+                w = w_q.reshape(-1)  # Flatten to 1D global vector
+
+                # Compute alpha (diagonal element)
+                alpha[n] = np.real(np.vdot(Q[:, n], w))
+                w -= alpha[n] * Q[:, n]
+
+                if n > 0:
+                    w -= beta[n-1] * Q[:, n-1]
+
+                # Modified Gram-Schmidt (Reorthogonalize Twice)
+                for _ in range(1):  # First and second pass
+                    coeffs = np.dot(Q[:, :n+1].conj().T, w)
+                    w -= np.dot(Q[:, :n+1], coeffs)
+
+                # Normalize w and compute beta
+                beta_norm = np.linalg.norm(w)
+                print(f"Iteration {n}: norm(w) = {beta_norm}")
+
+                if beta_norm > 1e-14 and n < m - 1:
+                    Q[:, n+1] = w / beta_norm
+                    beta[n] = beta_norm
+
+            # Debugging orthogonality
+            if block_start > 0:
+                for i in range(min(block_start + block_size, m)):
+                    for j in range(i):
+                        overlap = np.vdot(Q[:, i], Q[:, j])
+                        print(f"Overlap Q[{i}] · Q[{j}] = {overlap}")
+
+        # Reshape Q back to the original shape for output
+        Q = Q.reshape(N_q, N_bands, N_gvecs, m)
+        self.Q = Q
+        self.alpha = alpha
+        self.beta = beta
+        # return Q, alpha, beta
 
     def _tridiagonal_matrix(self, alpha, beta):
         """
@@ -772,3 +871,60 @@ class dielectricModel():
         fig.savefig(fname=save_path)
         return fig, ax
 
+
+
+    def epsilon_q_3D(q, kappa, n, alpha=1.5, m=1):
+        """
+        Calculate the 3D dielectric function.
+        
+        Parameters:
+        q : float or array-like
+            Wave vector
+        kappa : float
+            q → 0 limit of the static RPA or experimental 3D dielectric function
+        n : float
+            Average valence electron density (in m^-3)
+        alpha : float, optional
+            Fitting parameter (default is 1.5)
+        m : float, optional
+            Electron mass (default is the rest mass of an electron in kg)
+        
+        Returns:
+        float or array-like
+            The calculated dielectric function
+        """
+        # Constants
+        hbar = 1  # Reduced Planck constant (J·s)
+        e = 1     # Elementary charge (C)
+        epsilon_0 = 1  # Vacuum permittivity (F/m)
+        
+        # Calculate plasma frequency
+        omega_p = np.sqrt(n * e**2 / (m * epsilon_0))
+        # Calculate Thomas-Fermi wave vector
+        k_F = (3 * np.pi**2 * n)**(2/3)
+        a_0 = 1 # bohr radius
+        q_TF = np.sqrt(4*k_F *n/(np.pi* a_0) ) 
+
+        
+        # Calculate the dielectric function
+        denominator = (1 / (kappa - 1)) + (alpha * q**2 / q_TF**2) + (hbar**2 * q**4 / (4 * m**2 * omega_p**2))
+        epsilon_q = 1 + (1 / denominator)
+        
+        return epsilon_q
+
+
+
+    def epsilon_2D(epsilon_q, epsilon_1, epsilon_2, q, d):
+        beta = q * d
+        Sigma_q = epsilon_1 + epsilon_2
+        Pi_q = epsilon_1 * epsilon_2
+        
+        cosh_beta = np.cosh(beta)
+        sinh_beta = np.sinh(beta)
+        exp_qd = np.exp(-q * d)
+        
+        numerator = epsilon_q * (epsilon_q * Sigma_q * cosh_beta + (Pi_q + epsilon_q**2) * sinh_beta) * (q * d - 1 + exp_qd)
+        denominator = beta * (epsilon_q * Sigma_q * cosh_beta + (Pi_q + epsilon_q**2) * sinh_beta) + 2 * Pi_q * (1 - cosh_beta) - epsilon_q * Sigma_q * sinh_beta
+        
+        return numerator / denominator
+        
